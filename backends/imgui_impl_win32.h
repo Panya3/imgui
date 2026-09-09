@@ -22,9 +22,12 @@
 
 // Follow "Getting Started" link and check examples/ folder to learn about using backends!
 IMGUI_IMPL_API bool     ImGui_ImplWin32_Init(void* hwnd);
+IMGUI_IMPL_API bool     ImGui_ImplWin32_Init(void* hwnd, void* active_hwnd);
 IMGUI_IMPL_API bool     ImGui_ImplWin32_InitForOpenGL(void* hwnd);
 IMGUI_IMPL_API void     ImGui_ImplWin32_Shutdown();
 IMGUI_IMPL_API void     ImGui_ImplWin32_NewFrame();
+IMGUI_IMPL_API void     ImGui_ImplWin32_EnableInputPolling(bool enable);
+IMGUI_IMPL_API bool     ImGui_ImplWin32_IsInputPollingEnabled();
 
 // Win32 message handler your application needs to call.
 // - Intentionally commented out in a '#if 0' block to avoid dragging dependencies on <windows.h> from this helper.

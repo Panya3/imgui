@@ -112,9 +112,13 @@ typedef DWORD(WINAPI* PFN_XInputGetState)(DWORD, XINPUT_STATE*);
 #pragma GCC diagnostic ignored "-Wcast-function-type"       // warning: cast between incompatible function types (for loader)
 #endif
 
+ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam = 0);
+static inline ImGuiKey ImGui_ImplWin32_VirtualKeyToImGuiKey(WPARAM wParam) { return ImGui_ImplWin32_KeyEventToImGuiKey(wParam, 0); }
+
 struct ImGui_ImplWin32_Data
 {
     HWND                        hWnd;
+    HWND                        ActiveHwnd;
     HWND                        MouseHwnd;
     int                         MouseTrackedArea;   // 0: not tracked, 1: client area, 2: non-client area
     int                         MouseButtonsDown;
@@ -122,6 +126,10 @@ struct ImGui_ImplWin32_Data
     INT64                       TicksPerSecond;
     ImGuiMouseCursor            LastMouseCursor;
     UINT32                      KeyboardCodePage;
+
+    int                         MouseIdList[5];
+    int                         LastKeyDown[256];
+    bool                        EnableInputPolling;
 
 #ifndef IMGUI_IMPL_WIN32_DISABLE_GAMEPAD
     bool                        HasGamepad;
@@ -159,7 +167,7 @@ static void ImGui_ImplWin32_UpdateKeyboardCodePage(ImGuiIO& io)
         bd->KeyboardCodePage = CP_ACP; // Fallback to default ANSI code page when fails.
 }
 
-static bool ImGui_ImplWin32_InitEx(void* hwnd, bool platform_has_own_dc)
+static bool ImGui_ImplWin32_InitEx(void* hwnd, void* active_hwnd, bool platform_has_own_dc)
 {
     ImGuiIO& io = ImGui::GetIO();
     IMGUI_CHECKVERSION();
@@ -179,9 +187,16 @@ static bool ImGui_ImplWin32_InitEx(void* hwnd, bool platform_has_own_dc)
     io.BackendFlags |= ImGuiBackendFlags_HasSetMousePos;          // We can honor io.WantSetMousePos requests (optional, rarely used)
 
     bd->hWnd = (HWND)hwnd;
+    bd->ActiveHwnd = active_hwnd ? (HWND)active_hwnd : (HWND)hwnd;
+    bd->EnableInputPolling = (active_hwnd != nullptr && active_hwnd != hwnd);
     bd->TicksPerSecond = perf_frequency;
     bd->Time = perf_counter;
     bd->LastMouseCursor = ImGuiMouseCursor_COUNT;
+    bd->MouseIdList[0] = VK_LBUTTON;
+    bd->MouseIdList[1] = VK_RBUTTON;
+    bd->MouseIdList[2] = VK_MBUTTON;
+    bd->MouseIdList[3] = VK_XBUTTON1;
+    bd->MouseIdList[4] = VK_XBUTTON2;
     ImGui_ImplWin32_UpdateKeyboardCodePage(io);
 
     // Our mouse update function expect PlatformHandle to be filled for the main viewport
@@ -215,13 +230,52 @@ static bool ImGui_ImplWin32_InitEx(void* hwnd, bool platform_has_own_dc)
 
 IMGUI_IMPL_API bool     ImGui_ImplWin32_Init(void* hwnd)
 {
-    return ImGui_ImplWin32_InitEx(hwnd, false);
+    return ImGui_ImplWin32_InitEx(hwnd, hwnd, false);
+}
+
+IMGUI_IMPL_API bool     ImGui_ImplWin32_Init(void* hwnd, void* active_hwnd)
+{
+    return ImGui_ImplWin32_InitEx(hwnd, active_hwnd, false);
 }
 
 IMGUI_IMPL_API bool     ImGui_ImplWin32_InitForOpenGL(void* hwnd)
 {
     // OpenGL needs CS_OWNDC
-    return ImGui_ImplWin32_InitEx(hwnd, true);
+    return ImGui_ImplWin32_InitEx(hwnd, hwnd, true);
+}
+
+IMGUI_IMPL_API void     ImGui_ImplWin32_EnableInputPolling(bool enable)
+{
+    ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData();
+    IM_ASSERT(bd != nullptr && "Platform backend not initialized!");
+    if (bd->EnableInputPolling && !enable)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (bd->MouseButtonsDown != 0)
+        {
+            for (int button = 0; button < 5; button++)
+                if (bd->MouseButtonsDown & (1 << button))
+                    io.AddMouseButtonEvent(button, false);
+            bd->MouseButtonsDown = 0;
+        }
+        for (int vk = 0; vk < 256; vk++)
+        {
+            if (bd->LastKeyDown[vk])
+            {
+                auto key = ImGui_ImplWin32_KeyEventToImGuiKey(vk, 0);
+                if (key != ImGuiKey_None)
+                    ImGui_ImplWin32_AddKeyEvent(io, key, false, vk);
+                bd->LastKeyDown[vk] = 0;
+            }
+        }
+    }
+    bd->EnableInputPolling = enable;
+}
+
+IMGUI_IMPL_API bool     ImGui_ImplWin32_IsInputPollingEnabled()
+{
+    ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData();
+    return bd ? bd->EnableInputPolling : false;
 }
 
 void    ImGui_ImplWin32_Shutdown()
@@ -318,7 +372,7 @@ static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io)
     IM_ASSERT(bd->hWnd != 0);
 
     HWND focused_window = ::GetForegroundWindow();
-    const bool is_app_focused = (focused_window == bd->hWnd);
+    const bool is_app_focused = (focused_window != nullptr) && (focused_window == bd->ActiveHwnd || ::GetAncestor(focused_window, GA_ROOT) == ::GetAncestor(bd->ActiveHwnd, GA_ROOT));
     if (is_app_focused)
     {
         // (Optional) Set OS mouse position from Dear ImGui if requested (rarely used, only when io.ConfigNavMoveSetMousePos is enabled by user)
@@ -432,6 +486,124 @@ void    ImGui_ImplWin32_NewFrame()
 
     // Update game controllers (if enabled and available)
     ImGui_ImplWin32_UpdateGamepads(io);
+
+    if (bd->EnableInputPolling)
+    {
+        HWND focused_window = ::GetForegroundWindow();
+        const bool is_app_focused = (focused_window != nullptr) && (focused_window == bd->ActiveHwnd || ::GetAncestor(focused_window, GA_ROOT) == ::GetAncestor(bd->ActiveHwnd, GA_ROOT));
+
+        if (is_app_focused)
+        {
+            // Update Mouse Button
+            for (int button = 0; button < 5; button++)
+            {
+                auto curMouseDown = ::GetKeyState(bd->MouseIdList[button]) & 0x8000;
+                auto lastMouseDown = bd->MouseButtonsDown & (1 << button);
+
+                if (curMouseDown && !lastMouseDown)
+                {
+                    bd->MouseButtonsDown |= 1 << button;
+                    io.AddMouseButtonEvent(button, true);
+                }
+                else if (!curMouseDown && lastMouseDown)
+                {
+                    bd->MouseButtonsDown &= ~(1 << button);
+                    io.AddMouseButtonEvent(button, false);
+                }
+            }
+
+            // Update Key Button & Modifiers
+            ImGui_ImplWin32_UpdateKeyModifiers(io);
+
+            for (int vk = 8; vk < 256; vk++)
+            {
+                // Skip generic modifiers (handled via L/R specific keys and UpdateKeyModifiers)
+                if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU)
+                    continue;
+
+                auto curKeyDown = IsVkDown(vk);
+                auto& lastKeyDown = bd->LastKeyDown[vk];
+
+                if (curKeyDown && !lastKeyDown)
+                {
+                    auto key = ImGui_ImplWin32_KeyEventToImGuiKey(vk, 0);
+                    if (key != ImGuiKey_None)
+                        ImGui_ImplWin32_AddKeyEvent(io, key, true, vk);
+                    lastKeyDown = true;
+                }
+                else if (!curKeyDown && lastKeyDown)
+                {
+                    auto key = ImGui_ImplWin32_KeyEventToImGuiKey(vk, 0);
+                    if (key != ImGuiKey_None)
+                        ImGui_ImplWin32_AddKeyEvent(io, key, false, vk);
+                    lastKeyDown = false;
+                }
+            }
+
+            // Update Character (only when text input is requested and not already fed by WM_CHAR)
+            if (io.WantTextInput && io.InputQueueCharacters.Size == 0)
+            {
+                auto ShouldRepeat = [&](float dur) -> bool
+                {
+                    if (dur < 0.0f) return false;
+                    if (dur == 0.0f) return true;
+                    const float delay = 0.50f;
+                    const float rate = 0.033f;
+                    if (dur >= delay)
+                    {
+                        float prev = dur - io.DeltaTime;
+                        if (prev < delay) return true;
+                        return (int)((dur - delay) / rate) > (int)((prev - delay) / rate);
+                    }
+                    return false;
+                };
+
+                static const char shift_digits[] = ")!@#$%^&*(";
+                for (int i = 0; i < 10; i++)
+                {
+                    auto key1Duration = io.KeysData[static_cast<ImGuiKey>(ImGuiKey_0 + i)].DownDuration;
+                    auto key2Duration = io.KeysData[static_cast<ImGuiKey>(ImGuiKey_Keypad0 + i)].DownDuration;
+                    if (ShouldRepeat(key1Duration))
+                        io.AddInputCharacterUTF16(io.KeyShift ? (ImWchar)shift_digits[i] : (ImWchar)(0x30 + i));
+                    else if (ShouldRepeat(key2Duration))
+                        io.AddInputCharacterUTF16((ImWchar)(0x30 + i));
+                }
+
+                const bool is_upper = (io.KeyShift ^ ((::GetKeyState(VK_CAPITAL) & 0x0001) != 0));
+                for (int i = 0; i < 26; i++)
+                {
+                    auto keyDuration = io.KeysData[static_cast<ImGuiKey>(ImGuiKey_A + i)].DownDuration;
+                    if (ShouldRepeat(keyDuration))
+                        io.AddInputCharacterUTF16((is_upper ? 0x41 : 0x61) + (UINT)i);
+                }
+
+                auto spaceDuration = io.KeysData[ImGuiKey_Space].DownDuration;
+                if (ShouldRepeat(spaceDuration))
+                    io.AddInputCharacterUTF16(' ');
+            }
+        }
+        else
+        {
+            // Release held buttons/keys on focus loss
+            if (bd->MouseButtonsDown != 0)
+            {
+                for (int button = 0; button < 5; button++)
+                    if (bd->MouseButtonsDown & (1 << button))
+                        io.AddMouseButtonEvent(button, false);
+                bd->MouseButtonsDown = 0;
+            }
+            for (int vk = 0; vk < 256; vk++)
+            {
+                if (bd->LastKeyDown[vk])
+                {
+                    auto key = ImGui_ImplWin32_KeyEventToImGuiKey(vk, 0);
+                    if (key != ImGuiKey_None)
+                        ImGui_ImplWin32_AddKeyEvent(io, key, false, vk);
+                    bd->LastKeyDown[vk] = 0;
+                }
+            }
+        }
+    }
 }
 
 // Map VK_xxx to ImGuiKey_xxx.
@@ -443,7 +615,9 @@ ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam)
     if ((wParam == VK_RETURN) && (HIWORD(lParam) & KF_EXTENDED))
         return ImGuiKey_KeypadEnter;
 
-    const int scancode = (int)LOBYTE(HIWORD(lParam));
+    int scancode = (int)LOBYTE(HIWORD(lParam));
+    if (scancode == 0)
+        scancode = (int)::MapVirtualKeyA((UINT)wParam, MAPVK_VK_TO_VSC);
     //IMGUI_DEBUG_LOG("scancode %3d, keycode = 0x%02X\n", scancode, wParam);
     switch (wParam)
     {
