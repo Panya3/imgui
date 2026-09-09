@@ -64,9 +64,16 @@ struct ImGui_ImplDX9_Data
     int                         VertexBufferSize;
     int                         IndexBufferSize;
     bool                        HasRgbaSupport;
+    bool                        UseStateBlock;
 
     ImGui_ImplDX9_Data()        { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
 };
+
+#ifndef IMGUI_IMPL_DX9_DEFAULT_USE_STATEBLOCK
+#define IMGUI_IMPL_DX9_DEFAULT_USE_STATEBLOCK false
+#endif
+
+static bool g_UseStateBlock = IMGUI_IMPL_DX9_DEFAULT_USE_STATEBLOCK;
 
 struct CUSTOMVERTEX
 {
@@ -168,6 +175,184 @@ static void ImGui_ImplDX9_DrawCallback_ResetRenderState(const ImDrawList*, const
 static void ImGui_ImplDX9_DrawCallback_SetSamplerLinear(const ImDrawList*, const ImDrawCmd*)    { ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData(); bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR); bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR); }
 static void ImGui_ImplDX9_DrawCallback_SetSamplerNearest(const ImDrawList*, const ImDrawCmd*)   { ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData(); bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT); bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT); }
 
+struct ImGui_ImplDX9_RenderState
+{
+    LPDIRECT3DDEVICE9               Device = nullptr;
+    IDirect3DVertexShader9*         VertexShader = nullptr;
+    IDirect3DPixelShader9*          PixelShader = nullptr;
+    IDirect3DVertexDeclaration9*    VertexDeclaration = nullptr;
+    DWORD                           FVF = 0;
+    IDirect3DVertexBuffer9*         StreamSource = nullptr;
+    UINT                        StreamOffset = 0;
+    UINT                        StreamStride = 0;
+    IDirect3DIndexBuffer9*      Indices = nullptr;
+    IDirect3DBaseTexture9*      Texture = nullptr;
+    D3DVIEWPORT9                Viewport = {};
+    RECT                        ScissorRect = {};
+    D3DMATRIX                   World = {};
+    D3DMATRIX                   View = {};
+    D3DMATRIX                   Projection = {};
+
+    DWORD                       SamplerMinFilter = 0;
+    DWORD                       SamplerMagFilter = 0;
+    DWORD                       SamplerAddressU = 0;
+    DWORD                       SamplerAddressV = 0;
+
+    DWORD                       TSS0_ColorOp = 0;
+    DWORD                       TSS0_ColorArg1 = 0;
+    DWORD                       TSS0_ColorArg2 = 0;
+    DWORD                       TSS0_AlphaOp = 0;
+    DWORD                       TSS0_AlphaArg1 = 0;
+    DWORD                       TSS0_AlphaArg2 = 0;
+    DWORD                       TSS1_ColorOp = 0;
+    DWORD                       TSS1_AlphaOp = 0;
+
+    DWORD                       RS_FillMode = 0;
+    DWORD                       RS_ShadeMode = 0;
+    DWORD                       RS_ZWriteEnable = 0;
+    DWORD                       RS_AlphaTestEnable = 0;
+    DWORD                       RS_CullMode = 0;
+    DWORD                       RS_ZEnable = 0;
+    DWORD                       RS_AlphaBlendEnable = 0;
+    DWORD                       RS_BlendOp = 0;
+    DWORD                       RS_SrcBlend = 0;
+    DWORD                       RS_DestBlend = 0;
+    DWORD                       RS_SeparateAlphaBlendEnable = 0;
+    DWORD                       RS_SrcBlendAlpha = 0;
+    DWORD                       RS_DestBlendAlpha = 0;
+    DWORD                       RS_ScissorTestEnable = 0;
+    DWORD                       RS_FogEnable = 0;
+    DWORD                       RS_RangeFogEnable = 0;
+    DWORD                       RS_SpecularEnable = 0;
+    DWORD                       RS_StencilEnable = 0;
+    DWORD                       RS_Clipping = 0;
+    DWORD                       RS_Lighting = 0;
+
+    ~ImGui_ImplDX9_RenderState() { Release(); }
+
+    void Save(LPDIRECT3DDEVICE9 device)
+    {
+        Device = device;
+        device->GetVertexShader(&VertexShader);
+        device->GetPixelShader(&PixelShader);
+        device->GetVertexDeclaration(&VertexDeclaration);
+        device->GetFVF(&FVF);
+        device->GetStreamSource(0, &StreamSource, &StreamOffset, &StreamStride);
+        device->GetIndices(&Indices);
+        device->GetTexture(0, &Texture);
+        device->GetViewport(&Viewport);
+        device->GetScissorRect(&ScissorRect);
+        device->GetTransform(D3DTS_WORLD, &World);
+        device->GetTransform(D3DTS_VIEW, &View);
+        device->GetTransform(D3DTS_PROJECTION, &Projection);
+
+        device->GetSamplerState(0, D3DSAMP_MINFILTER, &SamplerMinFilter);
+        device->GetSamplerState(0, D3DSAMP_MAGFILTER, &SamplerMagFilter);
+        device->GetSamplerState(0, D3DSAMP_ADDRESSU, &SamplerAddressU);
+        device->GetSamplerState(0, D3DSAMP_ADDRESSV, &SamplerAddressV);
+
+        device->GetTextureStageState(0, D3DTSS_COLOROP, &TSS0_ColorOp);
+        device->GetTextureStageState(0, D3DTSS_COLORARG1, &TSS0_ColorArg1);
+        device->GetTextureStageState(0, D3DTSS_COLORARG2, &TSS0_ColorArg2);
+        device->GetTextureStageState(0, D3DTSS_ALPHAOP, &TSS0_AlphaOp);
+        device->GetTextureStageState(0, D3DTSS_ALPHAARG1, &TSS0_AlphaArg1);
+        device->GetTextureStageState(0, D3DTSS_ALPHAARG2, &TSS0_AlphaArg2);
+        device->GetTextureStageState(1, D3DTSS_COLOROP, &TSS1_ColorOp);
+        device->GetTextureStageState(1, D3DTSS_ALPHAOP, &TSS1_AlphaOp);
+
+        device->GetRenderState(D3DRS_FILLMODE, &RS_FillMode);
+        device->GetRenderState(D3DRS_SHADEMODE, &RS_ShadeMode);
+        device->GetRenderState(D3DRS_ZWRITEENABLE, &RS_ZWriteEnable);
+        device->GetRenderState(D3DRS_ALPHATESTENABLE, &RS_AlphaTestEnable);
+        device->GetRenderState(D3DRS_CULLMODE, &RS_CullMode);
+        device->GetRenderState(D3DRS_ZENABLE, &RS_ZEnable);
+        device->GetRenderState(D3DRS_ALPHABLENDENABLE, &RS_AlphaBlendEnable);
+        device->GetRenderState(D3DRS_BLENDOP, &RS_BlendOp);
+        device->GetRenderState(D3DRS_SRCBLEND, &RS_SrcBlend);
+        device->GetRenderState(D3DRS_DESTBLEND, &RS_DestBlend);
+        device->GetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, &RS_SeparateAlphaBlendEnable);
+        device->GetRenderState(D3DRS_SRCBLENDALPHA, &RS_SrcBlendAlpha);
+        device->GetRenderState(D3DRS_DESTBLENDALPHA, &RS_DestBlendAlpha);
+        device->GetRenderState(D3DRS_SCISSORTESTENABLE, &RS_ScissorTestEnable);
+        device->GetRenderState(D3DRS_FOGENABLE, &RS_FogEnable);
+        device->GetRenderState(D3DRS_RANGEFOGENABLE, &RS_RangeFogEnable);
+        device->GetRenderState(D3DRS_SPECULARENABLE, &RS_SpecularEnable);
+        device->GetRenderState(D3DRS_STENCILENABLE, &RS_StencilEnable);
+        device->GetRenderState(D3DRS_CLIPPING, &RS_Clipping);
+        device->GetRenderState(D3DRS_LIGHTING, &RS_Lighting);
+    }
+
+    void Restore()
+    {
+        if (!Device)
+            return;
+
+        Device->SetTransform(D3DTS_WORLD, &World);
+        Device->SetTransform(D3DTS_VIEW, &View);
+        Device->SetTransform(D3DTS_PROJECTION, &Projection);
+
+        Device->SetRenderState(D3DRS_FILLMODE, RS_FillMode);
+        Device->SetRenderState(D3DRS_SHADEMODE, RS_ShadeMode);
+        Device->SetRenderState(D3DRS_ZWRITEENABLE, RS_ZWriteEnable);
+        Device->SetRenderState(D3DRS_ALPHATESTENABLE, RS_AlphaTestEnable);
+        Device->SetRenderState(D3DRS_CULLMODE, RS_CullMode);
+        Device->SetRenderState(D3DRS_ZENABLE, RS_ZEnable);
+        Device->SetRenderState(D3DRS_ALPHABLENDENABLE, RS_AlphaBlendEnable);
+        Device->SetRenderState(D3DRS_BLENDOP, RS_BlendOp);
+        Device->SetRenderState(D3DRS_SRCBLEND, RS_SrcBlend);
+        Device->SetRenderState(D3DRS_DESTBLEND, RS_DestBlend);
+        Device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, RS_SeparateAlphaBlendEnable);
+        Device->SetRenderState(D3DRS_SRCBLENDALPHA, RS_SrcBlendAlpha);
+        Device->SetRenderState(D3DRS_DESTBLENDALPHA, RS_DestBlendAlpha);
+        Device->SetRenderState(D3DRS_SCISSORTESTENABLE, RS_ScissorTestEnable);
+        Device->SetRenderState(D3DRS_FOGENABLE, RS_FogEnable);
+        Device->SetRenderState(D3DRS_RANGEFOGENABLE, RS_RangeFogEnable);
+        Device->SetRenderState(D3DRS_SPECULARENABLE, RS_SpecularEnable);
+        Device->SetRenderState(D3DRS_STENCILENABLE, RS_StencilEnable);
+        Device->SetRenderState(D3DRS_CLIPPING, RS_Clipping);
+        Device->SetRenderState(D3DRS_LIGHTING, RS_Lighting);
+
+        Device->SetTextureStageState(0, D3DTSS_COLOROP, TSS0_ColorOp);
+        Device->SetTextureStageState(0, D3DTSS_COLORARG1, TSS0_ColorArg1);
+        Device->SetTextureStageState(0, D3DTSS_COLORARG2, TSS0_ColorArg2);
+        Device->SetTextureStageState(0, D3DTSS_ALPHAOP, TSS0_AlphaOp);
+        Device->SetTextureStageState(0, D3DTSS_ALPHAARG1, TSS0_AlphaArg1);
+        Device->SetTextureStageState(0, D3DTSS_ALPHAARG2, TSS0_AlphaArg2);
+        Device->SetTextureStageState(1, D3DTSS_COLOROP, TSS1_ColorOp);
+        Device->SetTextureStageState(1, D3DTSS_ALPHAOP, TSS1_AlphaOp);
+
+        Device->SetSamplerState(0, D3DSAMP_MINFILTER, SamplerMinFilter);
+        Device->SetSamplerState(0, D3DSAMP_MAGFILTER, SamplerMagFilter);
+        Device->SetSamplerState(0, D3DSAMP_ADDRESSU, SamplerAddressU);
+        Device->SetSamplerState(0, D3DSAMP_ADDRESSV, SamplerAddressV);
+
+        Device->SetScissorRect(&ScissorRect);
+        Device->SetViewport(&Viewport);
+        Device->SetTexture(0, Texture);
+        Device->SetIndices(Indices);
+        Device->SetStreamSource(0, StreamSource, StreamOffset, StreamStride);
+        if (VertexDeclaration)
+            Device->SetVertexDeclaration(VertexDeclaration);
+        if (FVF)
+            Device->SetFVF(FVF);
+        Device->SetPixelShader(PixelShader);
+        Device->SetVertexShader(VertexShader);
+
+        Release();
+    }
+
+    void Release()
+    {
+        if (VertexShader)       { VertexShader->Release(); VertexShader = nullptr; }
+        if (PixelShader)        { PixelShader->Release();  PixelShader = nullptr; }
+        if (VertexDeclaration)  { VertexDeclaration->Release(); VertexDeclaration = nullptr; }
+        if (StreamSource)       { StreamSource->Release(); StreamSource = nullptr; }
+        if (Indices)            { Indices->Release();      Indices = nullptr; }
+        if (Texture)            { Texture->Release();      Texture = nullptr; }
+        Device = nullptr;
+    }
+};
+
 // Render function.
 void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
 {
@@ -203,32 +388,42 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
 
     // Backup the DX9 state
     IDirect3DStateBlock9* state_block = nullptr;
-    if (device->CreateStateBlock(D3DSBT_ALL, &state_block) < 0)
-        return;
-    if (state_block->Capture() < 0)
-    {
-        state_block->Release();
-        return;
-    }
-
-    // Backup the DX9 transform (DX9 documentation suggests that it is included in the StateBlock but it doesn't appear to)
     D3DMATRIX last_world, last_view, last_projection;
-    device->GetTransform(D3DTS_WORLD, &last_world);
-    device->GetTransform(D3DTS_VIEW, &last_view);
-    device->GetTransform(D3DTS_PROJECTION, &last_projection);
+    ImGui_ImplDX9_RenderState manual_state;
+    if (bd->UseStateBlock)
+    {
+        if (device->CreateStateBlock(D3DSBT_ALL, &state_block) < 0)
+            return;
+        if (state_block->Capture() < 0)
+        {
+            state_block->Release();
+            return;
+        }
+
+        // Backup the DX9 transform (DX9 documentation suggests that it is included in the StateBlock but it doesn't appear to)
+        device->GetTransform(D3DTS_WORLD, &last_world);
+        device->GetTransform(D3DTS_VIEW, &last_view);
+        device->GetTransform(D3DTS_PROJECTION, &last_projection);
+    }
+    else
+    {
+        manual_state.Save(device);
+    }
 
     // Allocate buffers
     CUSTOMVERTEX* vtx_dst;
     ImDrawIdx* idx_dst;
     if (bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
     {
-        state_block->Release();
+        if (state_block)
+            state_block->Release();
         return;
     }
     if (bd->pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (void**)&idx_dst, D3DLOCK_DISCARD) < 0)
     {
         bd->pVB->Unlock();
-        state_block->Release();
+        if (state_block)
+            state_block->Release();
         return;
     }
 
@@ -302,14 +497,21 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
         global_vtx_offset += draw_list->VtxBuffer.Size;
     }
 
-    // Restore the DX9 transform
-    device->SetTransform(D3DTS_WORLD, &last_world);
-    device->SetTransform(D3DTS_VIEW, &last_view);
-    device->SetTransform(D3DTS_PROJECTION, &last_projection);
+    if (bd->UseStateBlock)
+    {
+        // Restore the DX9 transform
+        device->SetTransform(D3DTS_WORLD, &last_world);
+        device->SetTransform(D3DTS_VIEW, &last_view);
+        device->SetTransform(D3DTS_PROJECTION, &last_projection);
 
-    // Restore the DX9 state
-    state_block->Apply();
-    state_block->Release();
+        // Restore the DX9 state
+        state_block->Apply();
+        state_block->Release();
+    }
+    else
+    {
+        manual_state.Restore();
+    }
 }
 
 static bool ImGui_ImplDX9_CheckFormatSupport(LPDIRECT3DDEVICE9 pDevice, D3DFORMAT format)
@@ -465,8 +667,16 @@ bool ImGui_ImplDX9_Init(IDirect3DDevice9* device)
     bd->pd3dDevice = device;
     bd->pd3dDevice->AddRef();
     bd->HasRgbaSupport = ImGui_ImplDX9_CheckFormatSupport(bd->pd3dDevice, D3DFMT_A8B8G8R8);
+    bd->UseStateBlock = g_UseStateBlock;
 
     return true;
+}
+
+void ImGui_ImplDX9_UseStateBlock(bool use_stateblock)
+{
+    g_UseStateBlock = use_stateblock;
+    if (ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData())
+        bd->UseStateBlock = use_stateblock;
 }
 
 void ImGui_ImplDX9_Shutdown()
