@@ -151,3 +151,6 @@ namespace ImGui
     void MyFunction(const char* name, MyMatrix44* mtx);
 }
 */
+
+//---- Win32 backend: Disable gamepad support (XInput)
+#define IMGUI_IMPL_WIN32_DISABLE_GAMEPAD
