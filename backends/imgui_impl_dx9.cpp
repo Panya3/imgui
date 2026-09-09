@@ -65,6 +65,7 @@ struct ImGui_ImplDX9_Data
     int                         IndexBufferSize;
     bool                        HasRgbaSupport;
     bool                        UseStateBlock;
+    bool                        AutoSwitchRenderTarget;
 
     ImGui_ImplDX9_Data()        { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
 };
@@ -73,7 +74,12 @@ struct ImGui_ImplDX9_Data
 #define IMGUI_IMPL_DX9_DEFAULT_USE_STATEBLOCK false
 #endif
 
+#ifndef IMGUI_IMPL_DX9_DEFAULT_AUTO_SWITCH_RENDER_TARGET
+#define IMGUI_IMPL_DX9_DEFAULT_AUTO_SWITCH_RENDER_TARGET false
+#endif
+
 static bool g_UseStateBlock = IMGUI_IMPL_DX9_DEFAULT_USE_STATEBLOCK;
+static bool g_AutoSwitchRenderTarget = IMGUI_IMPL_DX9_DEFAULT_AUTO_SWITCH_RENDER_TARGET;
 
 struct CUSTOMVERTEX
 {
@@ -454,6 +460,27 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     device->SetIndices(bd->pIB);
     device->SetFVF(D3DFVF_CUSTOMVERTEX);
 
+    // Auto-switch RenderTarget to BackBuffer if needed
+    LPDIRECT3DSURFACE9 pCurrentRT = nullptr;
+    LPDIRECT3DSURFACE9 pBackBuffer = nullptr;
+    LPDIRECT3DSURFACE9 pOriginalRT = nullptr;
+    LPDIRECT3DSURFACE9 pOriginalDepthStencil = nullptr;
+    if (bd->AutoSwitchRenderTarget)
+    {
+        if (device->GetRenderTarget(0, &pCurrentRT) == D3D_OK &&
+            device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &pBackBuffer) == D3D_OK)
+        {
+            if (pCurrentRT != pBackBuffer)
+            {
+                pOriginalRT = pCurrentRT;
+                pCurrentRT = nullptr;
+                device->GetDepthStencilSurface(&pOriginalDepthStencil);
+                device->SetDepthStencilSurface(nullptr);
+                device->SetRenderTarget(0, pBackBuffer);
+            }
+        }
+    }
+
     // Setup desired DX state
     ImGui_ImplDX9_SetupRenderState(draw_data);
 
@@ -496,6 +523,18 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
         global_idx_offset += draw_list->IdxBuffer.Size;
         global_vtx_offset += draw_list->VtxBuffer.Size;
     }
+
+    // Restore RenderTarget and DepthStencil if switched
+    if (pOriginalRT)
+    {
+        device->SetRenderTarget(0, pOriginalRT);
+        device->SetDepthStencilSurface(pOriginalDepthStencil);
+        pOriginalRT->Release();
+        pOriginalRT = nullptr;
+    }
+    if (pOriginalDepthStencil) { pOriginalDepthStencil->Release(); pOriginalDepthStencil = nullptr; }
+    if (pBackBuffer)           { pBackBuffer->Release();           pBackBuffer = nullptr; }
+    if (pCurrentRT)            { pCurrentRT->Release();            pCurrentRT = nullptr; }
 
     if (bd->UseStateBlock)
     {
@@ -668,6 +707,7 @@ bool ImGui_ImplDX9_Init(IDirect3DDevice9* device)
     bd->pd3dDevice->AddRef();
     bd->HasRgbaSupport = ImGui_ImplDX9_CheckFormatSupport(bd->pd3dDevice, D3DFMT_A8B8G8R8);
     bd->UseStateBlock = g_UseStateBlock;
+    bd->AutoSwitchRenderTarget = g_AutoSwitchRenderTarget;
 
     return true;
 }
@@ -677,6 +717,13 @@ void ImGui_ImplDX9_UseStateBlock(bool use_stateblock)
     g_UseStateBlock = use_stateblock;
     if (ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData())
         bd->UseStateBlock = use_stateblock;
+}
+
+void ImGui_ImplDX9_EnableAutoRenderTargetSwitch(bool enable)
+{
+    g_AutoSwitchRenderTarget = enable;
+    if (ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData())
+        bd->AutoSwitchRenderTarget = enable;
 }
 
 void ImGui_ImplDX9_Shutdown()

@@ -37,4 +37,7 @@ IMGUI_IMPL_API void     ImGui_ImplDX9_UpdateTexture(ImTextureData* tex);
 // Optional: control whether to use IDirect3DStateBlock9 (legacy) or manual state save/restore (default).
 IMGUI_IMPL_API void     ImGui_ImplDX9_UseStateBlock(bool use_stateblock = true);
 
+// Optional: control whether to automatically switch RenderTarget 0 to main back buffer during render (default to false).
+IMGUI_IMPL_API void     ImGui_ImplDX9_EnableAutoRenderTargetSwitch(bool enable = true);
+
 #endif // #ifndef IMGUI_DISABLE
