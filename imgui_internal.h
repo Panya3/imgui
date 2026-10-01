@@ -368,6 +368,7 @@ extern IMGUI_API ImGuiContext* GImGui;  // Current implicit context pointer
 // - Helper: ImPool<>
 // - Helper: ImChunkStream<>
 // - Helper: ImGuiTextIndex
+// - Helper: ImGuiTextFilterItem
 // - Helper: ImGuiStorage
 //-----------------------------------------------------------------------------
 
@@ -407,7 +408,7 @@ IMGUI_API const char*   ImStrSkipBlank(const char* str);                        
 IMGUI_API int           ImStrlenW(const ImWchar* str);                                      // Computer string length (ImWchar string)
 IMGUI_API const char*   ImStrbol(const char* buf_mid_line, const char* buf_begin);          // Find beginning-of-line
 IM_MSVC_RUNTIME_CHECKS_OFF
-inline char             ImToUpper(char c)               { return (c >= 'a' && c <= 'z') ? c &= ~32 : c; }
+inline char             ImToUpper(char c)               { return (c >= 'a' && c <= 'z') ? c & ~32 : c; }
 inline bool             ImCharIsBlankA(char c)          { return c == ' ' || c == '\t'; }
 inline bool             ImCharIsBlankW(unsigned int c)  { return c == ' ' || c == '\t' || c == 0x3000; }
 inline bool             ImCharIsXdigitA(char c)         { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'); }
@@ -536,8 +537,9 @@ inline ImVec2 ImTrunc(const ImVec2& v)                                  { return
 inline float  ImFloor(float f)                                          { return (float)((f >= 0 || (float)(int)f == f) ? (int)f : (int)f - 1); } // Decent replacement for floorf()
 inline ImVec2 ImFloor(const ImVec2& v)                                  { return ImVec2(ImFloor(v.x), ImFloor(v.y)); }
 inline float  ImTrunc64(float f)                                        { return (float)(ImS64)(f); }
-inline float  ImRound64(float f)                                        { return (float)(ImS64)(f + 0.5f); } // FIXME: Positive values only.
-inline float  ImCeilFast(float f)                                       { int i = (int)f; return (float)(i + (f > (float)i)); } // Consider using the the bit-hack version (search for "0x1p120f").
+inline float  ImRoundPositive64(float f)                                { return (float)(ImS64)(f + 0.5f); } // Positive values only.
+inline float  ImRoundSigned64(float f)                                  { return (float)(ImS64)(f >= 0.0f ? f + 0.5f : f - 0.5f); }
+inline float  ImCeilFast(float f)                                       { int i = (int)f; return (float)(i + (f > (float)i)); } // Consider using the bit-hack version (search for "0x1p120f").
 inline int    ImModPositive(int a, int b)                               { return (a + b) % b; }
 inline float  ImDot(const ImVec2& a, const ImVec2& b)                   { return a.x * b.x + a.y * b.y; }
 inline ImVec2 ImRotate(const ImVec2& v, float cos_a, float sin_a)       { return ImVec2(v.x * cos_a - v.y * sin_a, v.x * sin_a + v.y * cos_a); }
@@ -836,6 +838,16 @@ struct ImGuiTextIndex
     void            append(const char* base, int old_size, int new_size);
 };
 
+// [Internal] Types
+struct ImGuiTextFilterItem
+{
+    const char*     Begin;              // Pointer within parent's buffer
+    int             Len;                // Length of text (non-zero terminated)
+    short           CountInclude;       // Number of consecutive items forming an end chain. >0 when beginning of an AND chain, =0 otherwise.
+    unsigned short  MatchIncludesMask;  // Storage for multi-sources versions of PassFilter(). Unused by core library.
+    ImGuiTextFilterItem(const char* b, const char* e) { IM_ASSERT(e > b); Begin = b; Len = (int)(e - b); CountInclude = 0; MatchIncludesMask = 0; }
+};
+
 // Helper: ImGuiPackedDate (sizeof() == 2)
 // Store a date in a way that is efficient to read/write in text form. If we stored e.g. number of days since Epoch we'd need costlier back and forth.
 // This is specifically designed to be able to prune old .ini data.
@@ -894,7 +906,7 @@ struct IMGUI_API ImDrawListSharedData
     const ImVec4*   TexUvLines;                 // UV of anti-aliased lines in the atlas (== FontAtlas->TexUvLines)
     ImFontAtlas*    FontAtlas;                  // Current font atlas
     ImFont*         Font;                       // Current font (used for simplified AddText overload)
-    float           FontSize;                   // Current font size (used for for simplified AddText overload)
+    float           FontSize;                   // Current font size (used for simplified AddText overload)
     float           FontScale;                  // Current font scale (== FontSize / Font->FontSize)
     float           CurveTessellationMaxError;  // Tessellation tolerance when using PathBezierCurveTo()
     float           CircleTessellationMaxError; // Number of circle segments to use per pixel of radius for AddCircle() etc
@@ -2445,6 +2457,7 @@ struct ImGuiContext
     ImGuiID                 NavJustMovedToFocusScopeId;         // Just navigated to this focus scope id (result of a successfully MoveRequest).
     ImGuiKeyChord           NavJustMovedToKeyMods;
     bool                    NavJustMovedToIsTabbing;            // Copy of ImGuiNavMoveFlags_IsTabbing. Maybe we should store whole flags.
+    bool                    NavJustMovedToIsInit;               // Copy of ImGuiNavMoveFlags_IsTabbing. Maybe we should store whole flags.
     bool                    NavJustMovedToHasSelectionData;     // Copy of move result's ItemFlags & ImGuiItemFlags_HasSelectionUserData). Maybe we should just store ImGuiNavItemData.
 
     // Navigation: extra config options (will be made public eventually)
@@ -3125,9 +3138,9 @@ struct IMGUI_API ImGuiTable
     ImDrawListSplitter*         DrawSplitter;               // Shortcut to TempData->DrawSplitter while in table. Isolate draw commands per columns to avoid switching clip rect constantly
     ImGuiTableInstanceData      InstanceDataFirst;
     ImVector<ImGuiTableInstanceData>    InstanceDataExtra;  // FIXME-OPT: Using a small-vector pattern would be good.
-    ImGuiTableColumnSortSpecs   SortSpecsSingle;
-    ImVector<ImGuiTableColumnSortSpecs> SortSpecsMulti;     // FIXME-OPT: Using a small-vector pattern would be good.
     ImGuiTableSortSpecs         SortSpecs;                  // Public facing sorts specs, this is what we return in TableGetSortSpecs()
+    ImVector<ImGuiTableColumnSortSpecs> SortSpecsMulti;     // FIXME-OPT: Using a small-vector pattern would be good.
+    ImGuiTableColumnSortSpecs   SortSpecsSingle;
     ImGuiTableColumnIdx         SortSpecsCount;
     ImGuiTableColumnIdx         ColumnsEnabledCount;        // Number of enabled columns (<= ColumnsCount)
     ImGuiTableColumnIdx         ColumnsEnabledFixedCount;   // Number of enabled columns using fixed width (<= ColumnsCount)
@@ -3159,6 +3172,7 @@ struct IMGUI_API ImGuiTable
     ImS8                        NavLayer;                   // ImGuiNavLayer at the time of BeginTable().
     bool                        IsLayoutLocked;             // Set by TableUpdateLayout() which is called when beginning the first row.
     bool                        IsInsideRow;                // Set when inside TableBeginRow()/TableEndRow().
+    bool                        IsNewTable;
     bool                        IsInitializing;
     bool                        IsReconcileMode;
     bool                        IsSortSpecsDirty;
@@ -3354,7 +3368,7 @@ namespace ImGui
     // - You are calling ImGui functions after ImGui::EndFrame()/ImGui::Render() and before the next ImGui::NewFrame(), which is also illegal.
     IMGUI_API ImGuiIO&         GetIO(ImGuiContext* ctx);
     IMGUI_API ImGuiPlatformIO& GetPlatformIO(ImGuiContext* ctx);
-    inline    float         GetScale()                  { ImGuiContext& g = *GImGui; return g.Style._MainScale; } // FIXME-DPI: I don't want to formalize this just yet. Because reasons. Please don't use.
+    inline    float         GetScale()                  { ImGuiContext& g = *GImGui; return g.Style._MainScale; } // FIXME-DPI: PLEASE DO NOT USE. I don't want to formalize this just yet. Because reasons.
     inline    ImGuiWindow*  GetCurrentWindowRead()      { ImGuiContext& g = *GImGui; return g.CurrentWindow; }
     inline    ImGuiWindow*  GetCurrentWindow()          { ImGuiContext& g = *GImGui; g.CurrentWindow->WriteAccessed = true; return g.CurrentWindow; }
     IMGUI_API ImGuiWindow*  FindWindowByID(ImGuiID id);
@@ -3674,6 +3688,7 @@ namespace ImGui
     IMGUI_API void          ClearDragDrop();
     IMGUI_API bool          IsDragDropPayloadBeingAccepted();
     IMGUI_API void          RenderDragDropTargetRectForItem(const ImRect& bb);
+    IMGUI_API void          RenderDragDropTargetRectForViewport(ImGuiID viewport_id, const ImRect& bb);
     IMGUI_API void          RenderDragDropTargetRectEx(ImDrawList* draw_list, const ImRect& bb, float rounding);
 
     // Typing-Select API
@@ -3706,6 +3721,7 @@ namespace ImGui
     IMGUI_API ImGuiTabItem* TabBarGetCurrentTab(ImGuiTabBar* tab_bar);
     inline int              TabBarGetTabOrder(ImGuiTabBar* tab_bar, ImGuiTabItem* tab) { return tab_bar->Tabs.index_from_ptr(tab); }
     IMGUI_API const char*   TabBarGetTabName(ImGuiTabBar* tab_bar, ImGuiTabItem* tab);
+    IMGUI_API ImVec2        TabBarGetTabPos(ImGuiTabBar* tab_bar, ImGuiTabItem* tab);
     IMGUI_API void          TabBarRemoveTab(ImGuiTabBar* tab_bar, ImGuiID tab_id);
     IMGUI_API void          TabBarCloseTab(ImGuiTabBar* tab_bar, ImGuiTabItem* tab);
     IMGUI_API void          TabBarQueueFocus(ImGuiTabBar* tab_bar, ImGuiTabItem* tab);
@@ -3916,10 +3932,11 @@ struct ImFontLoader
     void            (*LoaderShutdown)(ImFontAtlas* atlas);
     bool            (*FontSrcInit)(ImFontAtlas* atlas, ImFontConfig* src);
     void            (*FontSrcDestroy)(ImFontAtlas* atlas, ImFontConfig* src);
-    bool            (*FontSrcContainsGlyph)(ImFontAtlas* atlas, ImFontConfig* src, ImWchar codepoint);
+    int             (*FontSrcGetGlyphIndexFromCodepoint)(ImFontAtlas* atlas, ImFontConfig* src, ImWchar codepoint); // Required
+    bool            (*FontSrcContainsGlyph)(ImFontAtlas* atlas, ImFontConfig* src, int glyph_index);
     bool            (*FontBakedInit)(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* loader_data_for_baked_src);
     void            (*FontBakedDestroy)(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* loader_data_for_baked_src);
-    bool            (*FontBakedLoadGlyph)(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* loader_data_for_baked_src, ImWchar codepoint, ImFontGlyph* out_glyph, float* out_advance_x);
+    bool            (*FontBakedLoadGlyph)(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* loader_data_for_baked_src, int glyph_index, ImFontGlyph* out_glyph, float* out_advance_x); // Required
 
     // Size of backend data, Per Baked * Per Source. Buffers are managed by core to avoid excessive allocations.
     // FIXME: At this point the two other types of buffers may be managed by core to be consistent?
